@@ -1,0 +1,495 @@
+package controller
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"testing"
+	"time"
+
+	"eos2git.cec.lab.emc.com/ISG-Edge/hzp-drift-svc/server/api/rest/generated"
+	"eos2git.cec.lab.emc.com/ISG-Edge/hzp-drift-svc/server/commons/constants"
+	"eos2git.cec.lab.emc.com/ISG-Edge/hzp-drift-svc/server/commons/utils"
+	mocks "eos2git.cec.lab.emc.com/ISG-Edge/hzp-drift-svc/server/mocks/services/service"
+	"eos2git.cec.lab.emc.com/ISG-Edge/hzp-drift-svc/server/models"
+	"eos2git.cec.lab.emc.com/ISG-Edge/hzp-drift-svc/server/models/dbmodels"
+	"eos2git.cec.lab.emc.com/ISG-Edge/hzp-drift-svc/server/models/errorresponse"
+	"eos2git.cec.lab.emc.com/ISG-Edge/hzp-powerapi-lib-go/powerapi"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+)
+
+func TestGetNodeDriftStream(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	c := NewController(s)
+
+	request := generated.GetNodeDriftStreamRequestObject{
+		ExecutionID: "execution_123",
+	}
+
+	response, err := c.GetNodeDriftStream(ctx, request)
+
+	assert.NoError(t, err)
+	assert.IsType(t, &NodeDriftStreamResponse{}, response)
+	assert.Equal(t, response.(*NodeDriftStreamResponse).executionID, "execution_123")
+}
+
+func TestGetActualDrift_Success(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	c := NewController(s)
+
+	actualDriftResult := &models.ActualDriftResult{
+		DeploymentDrift: &dbmodels.DeploymentDrift{
+			DeploymentID: "1234",
+			Timestamp:    time.Now(),
+			Status:       generated.DeploymentDriftStatusEnumDONE,
+			ExecutionID:  utils.ToPointer("execution_1"),
+			TotalNodes:   utils.ToPointer(100),
+		},
+		NodeDrifts: []dbmodels.NodeDrift{
+			{
+				NodeDriftMetaData: dbmodels.NodeDriftMetaData{
+					NodeID:       "node_1",
+					DeploymentID: "deployment_1",
+					NodeType:     "security",
+				},
+				NodeDriftDiffData: dbmodels.NodeDriftDiffData{
+					DiffCount: utils.ToPointer(1),
+					Diff:      utils.ToPointer(""),
+					Status:    generated.NodeDriftStatusEnumDONE,
+					Timestamp: &time.Time{},
+				},
+			},
+		},
+	}
+
+	s.On("RetrieveActualDrift", ctx, "1234", mock.Anything).Return(actualDriftResult, 1, nil).Once()
+
+	response, err := c.GetActualDrift(ctx,
+		generated.GetActualDriftRequestObject{
+			DeploymentID: "1234",
+			Params: generated.GetActualDriftParams{
+				Offset: utils.ToPointer(0),
+				Limit:  utils.ToPointer(1),
+			},
+		},
+	)
+
+	assert.NoError(t, err)
+	assert.IsType(t, generated.GetActualDrift200JSONResponse{}, response)
+}
+
+func TestGetActualDrift_DeploymentID_Not_Found(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	c := NewController(s)
+
+	err := errorresponse.ErrDeploymentIDNotFound
+	s.On("RetrieveActualDrift", ctx, "1234", mock.Anything).Return(nil, 0, err).Once()
+
+	_, err = c.GetActualDrift(ctx,
+		generated.GetActualDriftRequestObject{
+			DeploymentID: "1234",
+			Params:       generated.GetActualDriftParams{},
+		},
+	)
+
+	assert.Error(t, err)
+}
+
+func TestGetActualDrift_BadRequest(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	c := NewController(s)
+	params := generated.GetActualDriftParams{
+		Offset: utils.ToPointer(0),
+		Limit:  utils.ToPointer(0),
+	}
+
+	_, err := c.GetActualDrift(ctx,
+		generated.GetActualDriftRequestObject{
+			DeploymentID: "1234",
+			Params:       params,
+		},
+	)
+	assert.Error(t, err)
+
+	params.Limit = utils.ToPointer(1001)
+	_, err = c.GetActualDrift(ctx,
+		generated.GetActualDriftRequestObject{
+			DeploymentID: "1234",
+			Params:       params,
+		},
+	)
+	assert.Error(t, err)
+
+	params.Offset = utils.ToPointer(-1)
+	params.Limit = utils.ToPointer(1)
+	_, err = c.GetActualDrift(ctx,
+		generated.GetActualDriftRequestObject{
+			DeploymentID: "1234",
+			Params:       params,
+		},
+	)
+	assert.Error(t, err)
+}
+
+func TestRunActualDrift_Success(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	c := NewController(s)
+
+	executionID := "executionID"
+
+	request := generated.RunActualDriftRequestObject{
+		DeploymentID: "deployment_123",
+	}
+
+	s.On("RunCheckDrift", ctx, request.DeploymentID).Return(executionID, nil).Once()
+
+	response, err := c.RunActualDrift(ctx, request)
+
+	assert.NoError(t, err)
+	assert.IsType(t, generated.RunActualDrift202JSONResponse{}, response)
+	assert.Equal(t, &executionID, response.(generated.RunActualDrift202JSONResponse).ExecutionID)
+
+	s.AssertExpectations(t)
+}
+
+func TestRunActualDrift_ServiceError(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	c := NewController(s)
+
+	expectedErr := errors.New("service error")
+
+	request := generated.RunActualDriftRequestObject{
+		DeploymentID: "deployment_123",
+	}
+
+	s.On("RunCheckDrift", ctx, request.DeploymentID).Return("", expectedErr).Once()
+
+	_, err := c.RunActualDrift(ctx, request)
+
+	assert.Error(t, err)
+
+	s.AssertExpectations(t)
+}
+
+// Add additional tests for coverage of getQueryParamsInput function
+func TestGetQueryParamsInput_FilterParsingError(t *testing.T) {
+	request := generated.GetActualDriftRequestObject{
+		Params: generated.GetActualDriftParams{
+			Filter: &[]string{"invalid_filter"},
+		},
+	}
+	_, err := getQueryParamsInput(request)
+	assert.Error(t, err)
+}
+
+func TestGetQueryParamsInput_Success(t *testing.T) {
+	filter := &[]string{"status eq 'Done'"}
+	order := "status.desc"
+	request := generated.GetActualDriftRequestObject{
+		Params: generated.GetActualDriftParams{
+			Limit:  utils.ToPointer(10),
+			Offset: utils.ToPointer(0),
+			Filter: filter,
+			Order:  &order,
+		},
+	}
+
+	queryParams, err := getQueryParamsInput(request)
+	assert.NoError(t, err)
+	assert.Equal(t, *queryParams.Limit, 10)
+	assert.Equal(t, queryParams.Offset, 0)
+	assert.NotNil(t, queryParams.FilterExpression)
+	assert.NotEmpty(t, queryParams.OrderBys)
+}
+
+// Ensure coverage for filters and order parsing
+func TestGetQueryParamsInput_FilterAndOrderParsingSuccess(t *testing.T) {
+	filter := &[]string{"status eq 'Done'"}
+	order := "status.desc"
+	request := generated.GetActualDriftRequestObject{
+		Params: generated.GetActualDriftParams{
+			Filter: filter,
+			Order:  &order,
+		},
+	}
+
+	queryParams, err := getQueryParamsInput(request)
+	assert.NoError(t, err)
+	assert.NotNil(t, queryParams.FilterExpression)
+	assert.NotEmpty(t, queryParams.OrderBys)
+}
+
+func TestGetQueryParamsInput_unsupportedOrderField(t *testing.T) {
+	order := "test.desc"
+	request := generated.GetActualDriftRequestObject{
+		Params: generated.GetActualDriftParams{
+			Order: &order,
+		},
+	}
+
+	var parseError *powerapi.ParseFilterError
+	queryParams, err := getQueryParamsInput(request)
+	assert.Error(t, err)
+	assert.ErrorAs(t, err, &parseError)
+	assert.Nil(t, queryParams)
+}
+
+func TestGetQueryParamsInput_unsupportedSelectField(t *testing.T) {
+	request := generated.GetActualDriftRequestObject{
+		Params: generated.GetActualDriftParams{
+			Select: utils.ToPointer("test"),
+		},
+	}
+
+	var parseError *powerapi.ParseFilterError
+	queryParams, err := getQueryParamsInput(request)
+	assert.Error(t, err)
+	assert.ErrorAs(t, err, &parseError)
+	assert.Nil(t, queryParams)
+}
+
+func Test_controller_GetDriftMetrics(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	s.On("GetMetrics", ctx, mock.Anything).Return(&generated.CategoriesMetricsResponse{}, nil).Once()
+	c := NewController(s)
+	res, err := c.GetDriftMetrics(ctx, generated.GetDriftMetricsRequestObject{})
+	assert.NoError(t, err)
+	assert.IsType(t, generated.GetDriftMetrics200JSONResponse{}, res)
+}
+
+func Test_controller_GetDriftMetricsFail(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	s.On("GetMetrics", ctx, mock.Anything).Return(nil, fmt.Errorf("test")).Once()
+	c := NewController(s)
+	res, err := c.GetDriftMetrics(ctx, generated.GetDriftMetricsRequestObject{})
+	assert.Error(t, err)
+	assert.Nil(t, res)
+}
+
+func Test_controller_GetDeploymentPlanDrift(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	addedStatus := generated.ADDED
+	diffCountExists := 1
+	diff := readFileToString(t, "../../../resources/tests/planDiff.json")
+	nodeName1 := "n1"
+	nodeType1 := "type1"
+
+	s.On("GetDeploymentPlanDrift", ctx, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(&generated.GetDeploymentDriftResponse{
+			Metrics: generated.CategoriesMetricsResponse{},
+			Results: generated.PlanDriftData{
+				Capabilities: nil,
+				Description:  nil,
+				Inputs: &generated.ElementDriftData{
+					Category: generated.OTHER,
+					DriftData: generated.DriftData{
+						Diff:      &diff,
+						DiffCount: &diffCountExists,
+						Status:    &addedStatus,
+					},
+				},
+				Labels: nil,
+				Nodes: &[]generated.ElementDriftData{
+					{
+						Category: generated.OTHER,
+						DriftData: generated.DriftData{
+							Diff:      &diff,
+							DiffCount: &diffCountExists,
+							Status:    &addedStatus,
+						},
+						Name: &nodeName1,
+						Type: &nodeType1,
+					},
+				},
+				ResourceTags: nil,
+				Version:      nil,
+			},
+		}, nil).Once()
+	c := NewController(s)
+	res, err := c.GetDeploymentPlanDrift(ctx, generated.GetDeploymentPlanDriftRequestObject{})
+	assert.NoError(t, err)
+	assert.NotNil(t, res)
+}
+
+func Test_controller_GetDeploymentPlanDriftFail(t *testing.T) {
+	ctx := context.TODO()
+	s := mocks.NewDriftService(t)
+	s.On("GetDeploymentPlanDrift", ctx, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil, fmt.Errorf("test")).Once()
+	c := NewController(s)
+	res, err := c.GetDeploymentPlanDrift(ctx, generated.GetDeploymentPlanDriftRequestObject{})
+	assert.Error(t, err)
+	assert.Nil(t, res)
+}
+
+func TestParseSelectWithAllowedFields(t *testing.T) {
+	tests := []struct {
+		name        string
+		queryString *string
+		expected    *[]string
+		err         error
+	}{
+		{
+			name:        "NilQueryString",
+			queryString: nil,
+			expected:    nil,
+			err:         nil,
+		},
+		{
+			name:        "EmptyQueryString",
+			queryString: utils.ToPointer(""),
+			expected:    &[]string{},
+			err:         nil,
+		},
+		{
+			name:        "SingleValidField",
+			queryString: utils.ToPointer(constants.StatusField),
+			expected:    &[]string{constants.StatusColumn},
+			err:         nil,
+		},
+		{
+			name:        "MultipleValidFields",
+			queryString: utils.ToPointer(fmt.Sprintf("%s,%s", constants.StatusField, constants.NodeIDField)),
+			expected:    &[]string{constants.StatusColumn, constants.NodeIDColumn},
+			err:         nil,
+		},
+		{
+			name:        "FieldWithSpaces",
+			queryString: utils.ToPointer(" category , nodeID "),
+			expected:    &[]string{constants.CategoryColumn, constants.NodeIDColumn},
+			err:         nil,
+		},
+		{
+			name:        "InvalidField",
+			queryString: utils.ToPointer("invalidField"),
+			expected:    nil,
+			err:         errors.New("field \"invalidField\" not allowed"),
+		},
+		{
+			name:        "ValidAndInvalidFields",
+			queryString: utils.ToPointer(fmt.Sprintf("%s,%s", constants.StatusField, "invalidField")),
+			expected:    nil,
+			err:         errors.New("field \"invalidField\" not allowed"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual, err := parseSelectWithAllowedFields(tt.queryString)
+			if (err != nil) && (tt.err != nil) {
+				assert.EqualError(t, err, tt.err.Error())
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
+}
+
+func readFileToString(t *testing.T, filename string) string {
+	file, err := os.Open(filename)
+	if err != nil {
+		assert.Failf(t, "failed to open file", "")
+	}
+	defer file.Close()
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		assert.Failf(t, "failed to read file content", "")
+	}
+
+	return string(content)
+}
+
+func TestGetFilterParamsInput(t *testing.T) {
+	validCategory := generated.CategoryEnum("INFRA")
+
+	tests := []struct {
+		name    string
+		request generated.GetDeploymentPlanDriftRequestObject
+		want    *generated.CategoryEnum
+		wantErr bool
+	}{
+		{
+			name: "No Filter",
+			request: generated.GetDeploymentPlanDriftRequestObject{
+				Params: generated.GetDeploymentPlanDriftParams{},
+			},
+			want:    nil,
+			wantErr: false,
+		},
+		{
+			name: "Valid Filter and Category",
+			request: generated.GetDeploymentPlanDriftRequestObject{
+				Params: generated.GetDeploymentPlanDriftParams{
+					Filter: &[]string{"category eq INFRA"},
+				},
+			},
+			want:    &validCategory,
+			wantErr: false,
+		},
+		{
+			name: "Invalid Category",
+			request: generated.GetDeploymentPlanDriftRequestObject{
+				Params: generated.GetDeploymentPlanDriftParams{
+					Filter: &[]string{"category eq INVALID_CATEGORY"},
+				},
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "Invalid Operator",
+			request: generated.GetDeploymentPlanDriftRequestObject{
+				Params: generated.GetDeploymentPlanDriftParams{
+					Filter: &[]string{"category ne INFRA"},
+				},
+			},
+			want:    nil,
+			wantErr: true,
+		},
+		{
+			name: "Invalid Due to Multiple Filters",
+			request: generated.GetDeploymentPlanDriftRequestObject{
+				DeploymentID: "",
+				Params: generated.GetDeploymentPlanDriftParams{
+					Filter: &[]string{"category eq INFRA", "category eq OTHER"},
+				},
+			},
+			want:    nil,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := getFilterParamsInput(tt.request)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("getFilterParamsInput() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got == nil && tt.want != nil {
+				t.Errorf("getFilterParamsInput() = %v, want %v", got, *tt.want)
+				return
+			}
+			if got != nil && tt.want == nil {
+				t.Errorf("getFilterParamsInput() = %v, want nil", *got)
+				return
+			}
+			if got != nil && tt.want != nil && *got != *tt.want {
+				t.Errorf("getFilterParamsInput() = %v, want %v", *got, *tt.want)
+			}
+		})
+	}
+}

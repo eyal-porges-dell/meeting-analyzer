@@ -1,0 +1,5 @@
+package: generated
+generate:
+  strict-server: true
+  models: true
+output: ../generated/models_gen.go

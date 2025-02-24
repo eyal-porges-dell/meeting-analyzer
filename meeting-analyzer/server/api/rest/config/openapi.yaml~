@@ -1,0 +1,265 @@
+openapi: 3.1.0
+info:
+  title: openapi
+  version: '1.0'
+servers:
+  - url: 'http://localhost:8080'
+paths:
+  /api/meetings/summary:
+    get:
+      summary: Get meeting summaries
+      tags: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                type: object
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      operationId: get-meeting-summaries
+      description: Retrieve meeting summaries
+      requestBody:
+        content: {}
+      x-stoplight:
+        id: vsc43teuru4iu
+    post:
+      summary: Generate meeting summary
+      tags: []
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                $ref: '#/components/schemas/RunActualDriftResponse'
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                type: object
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: object
+                $ref: '#/components/schemas/ErrorResponse'
+      operationId: generate-meeting-summary
+      description: Generate meeting summary
+      x-stoplight:
+        id: syep1gz6o54pj
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateMeetingSummaryRequest'
+    parameters: []
+  '/api/meetings/summary/{MeetingID}':
+    get:
+      summary: Get meeting summary by ID
+      responses:
+        '200':
+          description: Meeting summary
+          headers: {}
+          content:
+            application/json:
+              schema:
+                description: |
+                  The response starts with an array of historical drift updates, followed by individual drift updates streamed in real-time.
+                type: object
+      operationId: get-meeting-summary-by-id
+      description: Get meeting summary by ID
+      x-stoplight:
+        id: 58w7th00ie7eu
+    parameters:
+      - schema:
+          type: string
+        name: MeetingID
+        in: path
+        required: true
+components:
+  schemas:
+    HTTPStatusEnum:
+      type: integer
+      x-units: FACT
+      description: |
+        Possible HTTP status values of completed or failed jobs.
+        * 200 - OK - Successful completion, with a response body.
+        * 201 - Created - Successful completion of a create request (POST to collection resource).
+        * 202 - Accepted - Job has been started. Response body is a job resource instance. Response status and body are available from job when it completes.
+        * 204 - No Content - Successful completion, without a response body.
+        * 206 - Partial Content - Paged response to a collection query.
+        * 299 - Completed with Messages - Core request completed but has messages for client. Ancillary portions of request may have failed. Few requests should be able to return this, as the intent is for requests to be atomic - to either succeed or roll back on failure.
+        * 400 - Invalid Request - The request is incorrect. To the extent possible, validate requests up front and use this code. Details in the response body.
+        * 401 - Unauthorized - The request cannot be authenticated.
+        * 403 - Forbidden - The request is not allowed for this client.
+        * 404 - Not Found - The id value in the request URL is not valid.
+        * 409 - Conflict - The request could not be completed due to a conflict with the current state of the target resource.
+        * 422 - Operation Failed - The request failed during execution.
+        * 429 - Too Many Requests - This particular client needs to slow down and take it easy. Retry after a delay.
+        * 500 - Internal Error - This means the product has a bug and customer should contact support.
+        * 503 - Service Unavailable - The service is temporarily unavailable. Try again later.
+      enum:
+        - 200
+        - 201
+        - 202
+        - 204
+        - 206
+        - 299
+        - 400
+        - 401
+        - 403
+        - 404
+        - 409
+        - 422
+        - 429
+        - 500
+        - 503
+    SeverityEnum:
+      type: string
+      description: |
+        The severity of the condition.
+        * INFO - Information that may be of use in understanding the failure. It is not a problem to fix.
+        * WARNING - A condition that isn't a failure, but may be unexpected or a contributing factor. It may be necessary to fix the condition to successfully retry the request.
+        * ERROR - An actual failure condition through which the request could not continue.
+        * CRITICAL - A failure with significant impact to the system. Normally failed commands roll back and are just ERROR, but may be used for exceptional cases.
+      enum:
+        - INFO
+        - WARNING
+        - ERROR
+        - CRITICAL
+    ErrorMessage:
+      type: object
+      description: 'A message describing the failure, a contributing factor to the failure, or possibly the aftermath of the failure.'
+      properties:
+        severity:
+          $ref: '#/components/schemas/SeverityEnum'
+        code:
+          type: string
+          description: |
+            Identifier for this kind of message. This is a string that can be used to look up 
+            additional information on the support website. (Note - specific format can be determined 
+            by platform - hex value codes are common in midrange storage.)
+        message:
+          type: string
+          description: Message string in English.
+        timestamp:
+          type: string
+          format: date-time
+          description: The time at which the error occurred.
+        message_l10n:
+          type: string
+          description: Localized message string.
+          x-implementation-note: 'Required when server or client l10n is supported, otherwise optional.'
+        arguments:
+          description: |
+            Ordered list of substitution args for the error message. Must match up with 
+            the {0}, {1}, etc... actually in the message referenced by the message code 
+            above, if any.
+          x-implementation-note: 'Required when server or client l10n is supported, otherwise optional.'
+          type: array
+          x-visibility: INTERNAL
+          items:
+            type: string
+      x-implementation-required:
+        - severity
+        - code
+        - message
+        - timestamp
+    ErrorResponse:
+      type: object
+      description: A standard response body used for all non-2xx REST responses.
+      properties:
+        http_status_code:
+          $ref: '#/components/schemas/HTTPStatusEnum'
+        messages:
+          description: |
+            A list of messages describing the failure encountered by this request. At least 
+            one will be of Error severity because Info and Warning conditions do not cause 
+            the request to fail.
+          type: array
+          items:
+            $ref: '#/components/schemas/ErrorMessage'
+    GenerateMeetingSummaryRequest:
+      title: GenerateMeetingSummaryRequest
+      x-stoplight:
+        id: nexoj0zhww049
+      type: object
+      required:
+        - meeting_id
+        - meeting_title
+        - transcription
+      properties:
+        meeting_id:
+          type: string
+          x-stoplight:
+            id: 4fyhqp8usfrba
+        meeting_title:
+          type: string
+          x-stoplight:
+            id: roxvnhhmcr5hp
+        transcription:
+          type: array
+          x-stoplight:
+            id: ffxee09jr0oz9
+          items:
+            $ref: '#/components/schemas/MemberTranscription'
+            x-stoplight:
+              id: naxl7hcmhruen
+    MemberTranscription:
+      title: MemberTranscription
+      x-stoplight:
+        id: pko26hklwas68
+      type: object
+      required:
+        - member_name
+        - timestamp
+        - content
+      properties:
+        member_name:
+          type: string
+          x-stoplight:
+            id: 5y3eesl8i6cnd
+        timestamp:
+          type: string
+          x-stoplight:
+            id: w6i7juxk25fnd
+          format: date-time
+        content:
+          type: string
+          x-stoplight:
+            id: 6qfykduvrjrlu
+    GenerateMeetingSummaryResponse:
+      title: GenerateMeetingSummaryResponse
+      x-stoplight:
+        id: tlibxe4xe4a7y
+      type: object
+      properties:
+        meeting_id:
+          type: string
+          x-stoplight:
+            id: ab953eeu3zw99
+  parameters: {}
+  responses: {}
